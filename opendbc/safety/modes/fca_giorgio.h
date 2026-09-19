@@ -117,17 +117,17 @@ static void fca_giorgio_rx_hook(const CANPacket_t *msg) {
 static bool fca_giorgio_tx_hook(const CANPacket_t *msg) {
   // lateral limits for LKA_COMMAND (11-bit torque, offset -1024, range [-1024, +1023])
   const TorqueSteeringLimits FCA_GIORGIO_STEERING_LIMITS = {
-    .max_torque = 511,
-    .max_rt_delta = 200,
-    .max_rate_up = 6,
-    .max_rate_down = 6,
+    .max_torque = 300,
+    .max_rt_delta = 150,
+    .max_rate_up = 4,
+    .max_rate_down = 4,
     .driver_torque_allowance = 80,
     .driver_torque_multiplier = 3,
     .type = TorqueDriverLimited,
   };
 
   // Max absolute torque for LKA_COMMAND_2 (carries apply_torque * 4, 12-bit signal)
-  const int FCA_GIORGIO_LKA_CMD2_MAX_TORQUE = 2044;  // 511 * 4
+  const int FCA_GIORGIO_LKA_CMD2_MAX_TORQUE = 1200;  // 300 * 4
 
   bool tx = true;
 
