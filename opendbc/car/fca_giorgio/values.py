@@ -12,12 +12,12 @@ class CarControllerParams:
   HUD_2_STEP = 25
   HUD_3_STEP = 100
 
-  STEER_MAX = 300
+  STEER_MAX = 600
   STEER_DRIVER_ALLOWANCE = 80
   STEER_DRIVER_MULTIPLIER = 3  # weight driver torque heavily
   STEER_DRIVER_FACTOR = 1  # from dbc
-  STEER_DELTA_UP = 4
-  STEER_DELTA_DOWN = 4
+  STEER_DELTA_UP = 6
+  STEER_DELTA_DOWN = 6
 
   def __init__(self, CP):
     pass

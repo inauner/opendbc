@@ -24,15 +24,19 @@ class CarController(CarControllerBase):
     # **** Steering Controls ************************************************ #
 
     if self.frame % self.CCP.STEER_STEP == 0:
-      if CC.latActive and CS.lka_status == 2:  # "lka_active" per DBC
+      # Send active=True whenever CC.latActive is true to trigger EPS handshake
+      lka_active = CC.latActive
+
+      # Only command non-zero torque after the EPS rack has formally acknowledged (lka_status == 2)
+      if lka_active and CS.lka_status == 2:
         new_torque = int(round(actuators.torque * self.CCP.STEER_MAX))
         apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorque, self.CCP)
       else:
         apply_torque = 0
 
       self.apply_torque_last = apply_torque
-      can_sends.append(fca_giorgiocan.create_steering_control(self.packer_pt, self.CANBUS.pt, "LKA_COMMAND", apply_torque, CC.latActive))
-      can_sends.append(fca_giorgiocan.create_steering_control(self.packer_pt, self.CANBUS.pt, "LKA_COMMAND_2", apply_torque * 4, CC.latActive))
+      can_sends.append(fca_giorgiocan.create_steering_control(self.packer_pt, self.CANBUS.pt, "LKA_COMMAND", apply_torque, lka_active))
+      can_sends.append(fca_giorgiocan.create_steering_control(self.packer_pt, self.CANBUS.pt, "LKA_COMMAND_2", apply_torque * 4, lka_active))
 
     # **** HUD Controls ***************************************************** #
 
