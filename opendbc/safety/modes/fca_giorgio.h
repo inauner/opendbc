@@ -8,22 +8,27 @@
 #define FCA_GIORGIO_EPS_2           0x106U
 #define FCA_GIORGIO_LKA_COMMAND     0x1F6U
 #define FCA_GIORGIO_LKA_COMMAND_2   0x117U
-// TODO: this isn't actually an LKA message on promester, coming from radar ECU
-#define FCA_GIORGIO_LKA_HUD_1       0x4AEU
 #define FCA_GIORGIO_LKA_HUD_2       0x547U
 #define FCA_GIORGIO_LKA_HUD_3       0x5A2U
 #define FCA_GIORGIO_ACC_2           0x22AU
 
 static uint8_t fca_giorgio_crc8_lut_j1850[256];  // Static lookup table for CRC8 SAE J1850
+static bool fca_giorgio_primary_pending = false;
+static int fca_giorgio_primary_torque = 0;
+static uint8_t fca_giorgio_primary_counter = 0;
+static uint32_t fca_giorgio_primary_ts = 0U;
 
 static safety_config fca_giorgio_init(uint16_t param) {
   SAFETY_UNUSED(param);
+  fca_giorgio_primary_pending = false;
+  fca_giorgio_primary_torque = 0;
+  fca_giorgio_primary_counter = 0;
+  fca_giorgio_primary_ts = 0U;
 
   // TODO: need to find a button message for cancel spam
   static const CanMsg FCA_GIORGIO_TX_MSGS[] = {
     {FCA_GIORGIO_LKA_COMMAND, 0, 4, .check_relay = true},
     {FCA_GIORGIO_LKA_COMMAND_2, 0, 4, .check_relay = true},
-    {FCA_GIORGIO_LKA_HUD_1, 0, 8, .check_relay = true},
     {FCA_GIORGIO_LKA_HUD_2, 0, 8, .check_relay = true},
     {FCA_GIORGIO_LKA_HUD_3, 0, 8, .check_relay = true},
   };
@@ -141,23 +146,36 @@ static bool fca_giorgio_tx_hook(const CANPacket_t *msg) {
     if (steer_torque_cmd_checks(desired_torque, steer_req, FCA_GIORGIO_STEERING_LIMITS)) {
       tx = false;
     }
+    // The controller sends one scaled companion immediately after this message.
+    // Share the checked result, rather than advancing the global rate limiter twice.
+    fca_giorgio_primary_pending = tx && steer_req;
+    fca_giorgio_primary_torque = desired_torque;
+    fca_giorgio_primary_counter = msg->data[2] & 0xFU;
+    fca_giorgio_primary_ts = microsecond_timer_get();
   }
 
-  // Safety check for secondary steering message (bounds check only — rate limiting
-  // is already enforced on LKA_COMMAND above; this just prevents out-of-range values)
+  // A bounds check alone would allow this message to bypass driver/rate limits.
+  // Nonzero torque must match a fresh, accepted primary, and may consume it only once.
   if (msg->addr == FCA_GIORGIO_LKA_COMMAND_2) {
     // Signal: LKA_COMMAND_2.LKA_TORQUE (12-bit, offset -2048)
     int desired_torque = ((msg->data[0] << 4) | (msg->data[1] >> 4)) - 2048;
+    bool steer_req = GET_BIT(msg, 11U);
+    uint8_t counter = msg->data[2] & 0xFU;
+    uint32_t elapsed = safety_get_ts_elapsed(microsecond_timer_get(), fca_giorgio_primary_ts);
 
     if ((desired_torque > FCA_GIORGIO_LKA_CMD2_MAX_TORQUE) ||
         (desired_torque < -FCA_GIORGIO_LKA_CMD2_MAX_TORQUE)) {
       tx = false;
     }
 
-    // Block non-zero torque when controls are not allowed
-    if (!controls_allowed && (desired_torque != 0)) {
-      tx = false;
+    if (desired_torque != 0) {
+      if (!controls_allowed || !steer_req || !fca_giorgio_primary_pending ||
+          (desired_torque != (fca_giorgio_primary_torque * 4)) ||
+          (counter != fca_giorgio_primary_counter) || (elapsed > 20000U)) {
+        tx = false;
+      }
     }
+    fca_giorgio_primary_pending = false;
   }
 
   // TODO: sanity check cancel spam, once a button message is found
