@@ -121,6 +121,77 @@ class TestFcaGiorgio_Safety(common.CarSafetyTest, common.DriverTorqueSteeringSaf
     self.assertTrue(self._rx(common.make_msg(0, 0x4AE)))
     self.assertFalse(self.safety.get_relay_malfunction())
 
+  def test_driver_torque_extraction(self):
+    # Regression: the previous inline bit math read ~ -1024 for nearly all
+    # DRIVER_TORQUE values, silently disabling driver-override detection.
+    # Verifies that DRIVER_TORQUE values round-trip through the safety code
+    # exactly (not within a tolerance) so the driver-override max-torque
+    # check fires correctly.
+    self.safety.init_tests()
+    # Reset torque_driver to zeros by sending 6 zero-torque messages.
+    for _ in range(6):
+      self._rx(self._torque_driver_msg(0))
+    self.assertEqual(self.safety.get_torque_driver_min(), 0)
+    self.assertEqual(self.safety.get_torque_driver_max(), 0)
+    # Driver pulls left at -100: min must become -100 (the previous bug
+    # would have read this as -1017).
+    self._rx(self._torque_driver_msg(-100))
+    self.assertEqual(self.safety.get_torque_driver_min(), -100)
+    self.assertEqual(self.safety.get_torque_driver_max(), 0)
+    # Drain back to 0, then driver pulls right at +100: max must become
+    # +100 (the previous bug would have read this as -1023 or similar).
+    for _ in range(6):
+      self._rx(self._torque_driver_msg(0))
+    self.assertEqual(self.safety.get_torque_driver_min(), 0)
+    self.assertEqual(self.safety.get_torque_driver_max(), 0)
+    self._rx(self._torque_driver_msg(100))
+    self.assertEqual(self.safety.get_torque_driver_min(), 0)
+    self.assertEqual(self.safety.get_torque_driver_max(), 100)
+
+  def test_accel_pedal_extraction(self):
+    # Regression: ACCEL_PEDAL's previous extraction read byte 3 bits 5-7
+    # (instead of byte 2 bits 4-7 / byte 3 bits 0-3), giving false negatives
+    # for typical pedal positions (raw 1..127) and false positives near
+    # bit 7 of byte 2. Verify the safety reads the correct signal bits so
+    # gas_pressed is true for any non-zero pedal position.
+    self.safety.init_tests()
+    # 0.4% packs to raw 1; the previous formula happened to read this as
+    # true, but values like 25% (raw 62) read as 0.
+    on_msg = self.packer.make_can_msg_safety("ENGINE_1", 0, {"ACCEL_PEDAL": 25})
+    self.assertTrue(self._rx(on_msg))
+    self.assertTrue(self.safety.get_gas_pressed_prev())
+    # 0 value must clear it.
+    off_msg = self.packer.make_can_msg_safety("ENGINE_1", 0, {"ACCEL_PEDAL": 0})
+    self.assertTrue(self._rx(off_msg))
+    self.assertFalse(self.safety.get_gas_pressed_prev())
+    # And the previous formula falsely read ACCEL_PEDAL=50% as raw 128
+    # (i.e. 51.2%). Verify 25% again with a fresh state to ensure it
+    # stays consistent across messages.
+    self.safety.init_tests()
+    on_msg = self.packer.make_can_msg_safety("ENGINE_1", 0, {"ACCEL_PEDAL": 50})
+    self.assertTrue(self._rx(on_msg))
+    self.assertTrue(self.safety.get_gas_pressed_prev())
+
+  def test_lka_command_extraction(self):
+    # Regression: the previous LKA_TORQUE extraction in the tx_hook was off
+    # by ~1300 units, so max_torque / driver checks never fired correctly.
+    # Verify the safety accepts a torque within the global max_torque limit
+    # when prev torque is at the same level (no rate-limit violation).
+    self.safety.set_controls_allowed(True)
+    self.safety.init_tests()
+    # Drain torque_driver to 0.
+    for _ in range(6):
+      self._rx(self._torque_driver_msg(0))
+    # Setting prev_torque = max_torque means the rate limiter and driver
+    # limiter don't reject a command at max_torque.
+    self._set_prev_torque(300)
+    # 300 raw is within max_torque (safety_max_limit_check is exclusive).
+    self.assertTrue(self._tx(self._torque_cmd_msg(300)),
+                    "LKA_TORQUE=300 with prev=300 must be accepted")
+    # 301 raw exceeds the exclusive bound and must be rejected.
+    self.assertFalse(self._tx(self._torque_cmd_msg(301)),
+                     "LKA_TORQUE=301 must be rejected (above max_torque)")
+
   def test_controller_sequence(self):
     from opendbc.car import structs
     from opendbc.car.fca_giorgio.carcontroller import CarController

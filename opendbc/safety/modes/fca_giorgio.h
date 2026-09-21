@@ -77,29 +77,76 @@ static uint32_t fca_giorgio_compute_crc(const CANPacket_t *msg) {
   return (uint8_t)(crc ^ 0xFFU);
 }
 
+// Bit math helpers for FCA Giorgio little-endian signals.
+//
+// DBC convention (Intel/little-endian): for a signal at bit N with length L,
+// the LSB of the signal is at message bit N (CAN bit numbering: byte b bit k
+// -> message bit 8*b + k). For each signal bit i (0 <= i < L), the message
+// bit is N + i, located in msg->data[(N+i)/8] at bit position (N+i) % 8.
+
+static int fca_giorgio_get_wheel_speed_fl(const CANPacket_t *msg) {
+  // ABS_1.WHEEL_SPEED_FL : 7|13@0+
+  return ((msg->data[0] >> 7) & 1) | (msg->data[1] << 1) | ((msg->data[2] & 0xFU) << 9);
+}
+
+static int fca_giorgio_get_wheel_speed_fr(const CANPacket_t *msg) {
+  // ABS_1.WHEEL_SPEED_FR : 10|13@0+
+  return ((msg->data[1] >> 2) & 0x3F) | ((msg->data[2] & 0x7FU) << 6);
+}
+
+static int fca_giorgio_get_wheel_speed_rl(const CANPacket_t *msg) {
+  // ABS_1.WHEEL_SPEED_RL : 29|13@0+
+  return ((msg->data[3] >> 5) & 0x7) | (msg->data[4] << 3) | ((msg->data[5] & 0x3U) << 11);
+}
+
+static int fca_giorgio_get_wheel_speed_rr(const CANPacket_t *msg) {
+  // ABS_1.WHEEL_SPEED_RR : 32|13@0+
+  return msg->data[4] | ((msg->data[5] & 0x1FU) << 8);
+}
+
+static int fca_giorgio_get_driver_torque(const CANPacket_t *msg) {
+  // EPS_2.DRIVER_TORQUE : 23|11@0+ (1,-1024)
+  return (((msg->data[2] >> 7) & 1) | (msg->data[3] << 1) | ((msg->data[4] & 0x3U) << 9)) - 1024;
+}
+
+static int fca_giorgio_get_accel_pedal_raw(const CANPacket_t *msg) {
+  // ENGINE_1.ACCEL_PEDAL : 20|8@0+ (0.4,0)
+  return ((msg->data[2] >> 4) & 0xFU) | ((msg->data[3] & 0xFU) << 4);
+}
+
+static int fca_giorgio_get_lka_torque(const CANPacket_t *msg) {
+  // LKA_COMMAND.LKA_TORQUE : 7|11@0+ (1,-1024)
+  return (((msg->data[0] >> 7) & 1) | (msg->data[1] << 1) | ((msg->data[2] & 0x3U) << 9)) - 1024;
+}
+
+static int fca_giorgio_get_lka_torque_2(const CANPacket_t *msg) {
+  // LKA_COMMAND_2.LKA_TORQUE : 7|12@0+ (1,-2048)
+  return (((msg->data[0] >> 7) & 1) | (msg->data[1] << 1) | ((msg->data[2] & 0x7U) << 9)) - 2048;
+}
+
 static void fca_giorgio_rx_hook(const CANPacket_t *msg) {
   if (msg->bus == 0U) {
     // Update in-motion state by sampling wheel speeds
     if (msg->addr == FCA_GIORGIO_ABS_1) {
       // Thanks, FCA, for these 13 bit signals. Makes perfect sense. Great work.
-      // Signals: ABS_3.WHEEL_SPEED_[FL,FR,RL,RR]
-      int wheel_speed_fl = (msg->data[1] >> 3) | (msg->data[0] << 5);
-      int wheel_speed_fr = (msg->data[3] >> 6) | (msg->data[2] << 2) | ((msg->data[1] & 0x7U) << 10);
-      int wheel_speed_rl = (msg->data[4] >> 1) | ((msg->data[3] & 0x3FU) << 7);
-      int wheel_speed_rr = (msg->data[6] >> 4) | (msg->data[5] << 4) | ((msg->data[4] & 0x1U) << 12);
+      // Signals: ABS_1.WHEEL_SPEED_[FL,FR,RL,RR]
+      int wheel_speed_fl = fca_giorgio_get_wheel_speed_fl(msg);
+      int wheel_speed_fr = fca_giorgio_get_wheel_speed_fr(msg);
+      int wheel_speed_rl = fca_giorgio_get_wheel_speed_rl(msg);
+      int wheel_speed_rr = fca_giorgio_get_wheel_speed_rr(msg);
       vehicle_moving = (wheel_speed_fl + wheel_speed_fr + wheel_speed_rl + wheel_speed_rr) > 0;
     }
 
     // Update driver input torque samples
     // Signal: EPS_2.DRIVER_TORQUE
     if (msg->addr == FCA_GIORGIO_EPS_2) {
-      int torque_driver_new = ((msg->data[2] << 3) | (msg->data[3] >> 5)) - 1024U;
+      int torque_driver_new = fca_giorgio_get_driver_torque(msg);
       update_sample(&torque_driver, torque_driver_new);
     }
 
-    // Signal: ENGINE_1.ACCEL_PEDAL
+    // Signal: ENGINE_1.ACCEL_PEDAL (8-bit raw, 0..255 maps to 0..102%)
     if (msg->addr == FCA_GIORGIO_ENGINE_1) {
-      gas_pressed = (((msg->data[2] & 0x1FU) << 3) | (msg->data[3] >> 5)) > 0U;
+      gas_pressed = fca_giorgio_get_accel_pedal_raw(msg) > 0U;
     }
 
     // Signal: ABS_3.BRAKE_PEDAL_SWITCH
@@ -139,7 +186,7 @@ static bool fca_giorgio_tx_hook(const CANPacket_t *msg) {
   // Safety check for commanded steering torque (primary message — full rate-limited check)
   if (msg->addr == FCA_GIORGIO_LKA_COMMAND) {
     // Signal: LKA_COMMAND.LKA_TORQUE
-    int desired_torque = ((msg->data[0] << 3) | (msg->data[1] >> 5)) - 1024U;
+    int desired_torque = fca_giorgio_get_lka_torque(msg);
     // Signal: LKA_COMMAND.LKA_ACTIVE
     bool steer_req = GET_BIT(msg, 12U);
 
@@ -158,7 +205,7 @@ static bool fca_giorgio_tx_hook(const CANPacket_t *msg) {
   // Nonzero torque must match a fresh, accepted primary, and may consume it only once.
   if (msg->addr == FCA_GIORGIO_LKA_COMMAND_2) {
     // Signal: LKA_COMMAND_2.LKA_TORQUE (12-bit, offset -2048)
-    int desired_torque = ((msg->data[0] << 4) | (msg->data[1] >> 4)) - 2048;
+    int desired_torque = fca_giorgio_get_lka_torque_2(msg);
     bool steer_req = GET_BIT(msg, 11U);
     uint8_t counter = msg->data[2] & 0xFU;
     uint32_t elapsed = safety_get_ts_elapsed(microsecond_timer_get(), fca_giorgio_primary_ts);
