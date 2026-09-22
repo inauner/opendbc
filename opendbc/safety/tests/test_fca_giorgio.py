@@ -10,7 +10,7 @@ class TestFcaGiorgio_Safety(common.CarSafetyTest, common.DriverTorqueSteeringSaf
 
   MAX_RATE_UP = 4
   MAX_RATE_DOWN = 4
-  MAX_TORQUE_LOOKUP = [0], [300]
+  MAX_TORQUE_LOOKUP = [0], [34]
   MAX_RT_DELTA = 150
 
   DRIVER_TORQUE_ALLOWANCE = 80
@@ -67,6 +67,19 @@ class TestFcaGiorgio_Safety(common.CarSafetyTest, common.DriverTorqueSteeringSaf
     values = {"LKA_TORQUE": torque, "LKA_ACTIVE": steer_req, "COUNTER": counter}
     return self.packer.make_can_msg_safety("LKA_COMMAND_2" if secondary else "LKA_COMMAND", 0, values)
 
+  def test_realtime_limits(self):
+    # At +/-34, even a full reversal is smaller than the retained RT delta 150.
+    # The generic test assumes MAX_RT_DELTA < MAX_TORQUE. Check that the tighter
+    # absolute bound still holds both before and after the RT timer expires.
+    for timer in (0, common.RT_INTERVAL + 1):
+      for sign in (-1, 1):
+        self.setUp()
+        self.safety.set_controls_allowed(True)
+        self.safety.set_timer(timer)
+        for torque in range(35):
+          self.assertTrue(self._tx(self._torque_cmd_msg(sign * torque)))
+        self.assertFalse(self._tx(self._torque_cmd_msg(sign * 35)))
+
   def test_secondary_requires_checked_primary(self):
     for sign in (-1, 1):
       self.setUp()
@@ -75,6 +88,16 @@ class TestFcaGiorgio_Safety(common.CarSafetyTest, common.DriverTorqueSteeringSaf
       self.assertTrue(self._tx(self._paired_msg(False, sign * 4)))
       self.assertTrue(self._tx(self._paired_msg(True, sign * 16)))
       self.assertFalse(self._tx(self._paired_msg(True, sign * 16)))
+
+  def test_lower_secondary_limit(self):
+    for sign in (-1, 1):
+      self.setUp()
+      self.safety.set_controls_allowed(True)
+      for torque in range(35):
+        self.assertTrue(self._tx(self._paired_msg(False, sign * torque)))
+        self.assertTrue(self._tx(self._paired_msg(True, sign * torque * 4)))
+      self.assertTrue(self._tx(self._paired_msg(False, sign * 34)))
+      self.assertFalse(self._tx(self._paired_msg(True, sign * 137)))
 
   def test_secondary_rejects_mismatch(self):
     for torque, req, counter in ((1200, 1, 0), (-16, 1, 0), (16, 0, 0), (16, 1, 1), (1201, 1, 0), (-1201, 1, 0)):
@@ -134,11 +157,11 @@ class TestFcaGiorgio_Safety(common.CarSafetyTest, common.DriverTorqueSteeringSaf
     control = structs.CarControl()
     self.safety.set_controls_allowed(True)
     # Exercise acknowledgment, saturation, reversal, driver override, and disengagement.
-    for frame in range(500):
-      control.latActive = frame < 450
+    for frame in range(1800):
+      control.latActive = frame < 1750
       control.actuators.torque = 1.0 if frame < 200 else -1.0
-      state.lka_status = 2 if 10 <= frame < 400 else 0
-      driver_torque = 250 if 350 <= frame < 400 else 0
+      state.lka_status = 2 if frame >= 10 and controller.lka_active else 0
+      driver_torque = 250 if 250 <= frame < 300 else 0
       state.out.steeringTorque = driver_torque
       self.safety.set_timer(frame * 10000)
       self.assertTrue(self._rx(self._torque_driver_msg(driver_torque)))

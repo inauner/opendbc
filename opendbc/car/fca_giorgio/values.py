@@ -12,7 +12,10 @@ class CarControllerParams:
   HUD_2_STEP = 25
   HUD_3_STEP = 100
 
-  STEER_MAX = 300  # conservative baseline for initial road testing
+  # Development limits: within both directions of the observed stock range (-68..34).
+  STEER_MAX = 34
+  LKA_MAX_REQUEST_NS = 3_500_000_000
+  LKA_RESET_NS = 2_000_000_000
   STEER_DRIVER_ALLOWANCE = 80
   STEER_DRIVER_MULTIPLIER = 3  # weight driver torque heavily
   STEER_DRIVER_FACTOR = 1  # from dbc
