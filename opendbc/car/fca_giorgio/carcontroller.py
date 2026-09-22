@@ -15,7 +15,39 @@ class CarController(CarControllerBase):
 
     self.apply_torque_last = 0
     self.lat_active_last = False
+    self.lka_active = False
+    self.request_started_ns = None
+    self.reset_started_ns = None
+    self.standby_started_ns = None
     self.frame = 0
+
+  def update_lka_request(self, lat_active, CS, now_nanos):
+    fault = CS.out.steerFaultPermanent or CS.out.steerFaultTemporary
+    if self.lka_active:
+      # Count the request itself, including zero torque while awaiting acknowledgment.
+      # Torque reversals, missing acknowledgment and brief disengagements cannot extend it.
+      if not lat_active or fault or now_nanos - self.request_started_ns >= self.CCP.LKA_MAX_REQUEST_NS:
+        self.lka_active = False
+        self.request_started_ns = None
+        self.reset_started_ns = now_nanos
+        self.standby_started_ns = None
+
+    if not self.lka_active:
+      if CS.lka_status == 0 and not fault:
+        if self.standby_started_ns is None:
+          self.standby_started_ns = now_nanos
+      else:
+        self.standby_started_ns = None
+
+      # First activation requires standby. Subsequent activations require a complete
+      # inactive interval AND continuous fault-free standby, including on re-engage.
+      reset_complete = self.reset_started_ns is None or (
+        now_nanos - self.reset_started_ns >= self.CCP.LKA_RESET_NS and
+        self.standby_started_ns is not None and now_nanos - self.standby_started_ns >= self.CCP.LKA_RESET_NS)
+      if lat_active and not fault and CS.lka_status == 0 and reset_complete:
+        self.lka_active = True
+        self.request_started_ns = now_nanos
+    return self.lka_active
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -24,11 +56,11 @@ class CarController(CarControllerBase):
     # **** Steering Controls ************************************************ #
 
     if self.frame % self.CCP.STEER_STEP == 0:
-      # Send active=True whenever CC.latActive is true to trigger EPS handshake
-      lka_active = CC.latActive
+      was_lka_active = self.lka_active
+      lka_active = self.update_lka_request(CC.latActive, CS, now_nanos)
 
       # Only command non-zero torque after the EPS rack has formally acknowledged (lka_status == 2)
-      if lka_active and CS.lka_status == 2:
+      if lka_active and was_lka_active and CS.lka_status == 2:
         new_torque = int(round(actuators.torque * self.CCP.STEER_MAX))
         apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorque, self.CCP)
       else:
@@ -40,12 +72,12 @@ class CarController(CarControllerBase):
 
     # **** HUD Controls ***************************************************** #
 
-    if self.frame % self.CCP.HUD_2_STEP == 0:
-      can_sends.append(fca_giorgiocan.create_lka_hud_2_control(self.packer_pt, self.CANBUS.pt, CC.latActive))
-    lat_active_rising = CC.latActive and not self.lat_active_last
-    if self.frame % self.CCP.HUD_3_STEP == 0 or lat_active_rising:
-      can_sends.append(fca_giorgiocan.create_lka_hud_3_control(self.packer_pt, self.CANBUS.pt, CC.latActive))
-    self.lat_active_last = CC.latActive
+    request_changed = self.lka_active != self.lat_active_last
+    if self.frame % self.CCP.HUD_2_STEP == 0 or request_changed:
+      can_sends.append(fca_giorgiocan.create_lka_hud_2_control(self.packer_pt, self.CANBUS.pt, self.lka_active))
+    if self.frame % self.CCP.HUD_3_STEP == 0 or request_changed:
+      can_sends.append(fca_giorgiocan.create_lka_hud_3_control(self.packer_pt, self.CANBUS.pt, self.lka_active))
+    self.lat_active_last = self.lka_active
 
     new_actuators = actuators.as_builder()
     new_actuators.torque = self.apply_torque_last / self.CCP.STEER_MAX

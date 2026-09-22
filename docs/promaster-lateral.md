@@ -1,5 +1,9 @@
 # ProMaster lateral development: stock reference and remaining blocker
 
+For the subsequent generated-control route, EPS fault analysis, and conservative
+request/reset candidate, see [request-duration investigation](promaster-request-duration.md).
+The limits and validation below describe the historical PR #1 baseline.
+
 ## Baseline
 
 This branch starts at inauner/opendbc `22b85a3cace6650dc8abd554dc93d8b85853a5b7`,
