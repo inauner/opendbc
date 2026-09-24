@@ -62,7 +62,16 @@ class CarController(CarControllerBase):
       # Only command non-zero torque after the EPS rack has formally acknowledged (lka_status == 2)
       if lka_active and was_lka_active and CS.lka_status == 2:
         new_torque = int(round(actuators.torque * self.CCP.STEER_MAX))
+        request_age = now_nanos - self.request_started_ns
+        if request_age >= self.CCP.LKA_RAMP_DOWN_NS:
+          # Ignore renewed demand and sign reversals once shutdown has started.
+          magnitude = max(0, abs(self.apply_torque_last) - self.CCP.LKA_RAMP_DELTA)
+          new_torque = magnitude if self.apply_torque_last >= 0 else -magnitude
         apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorque, self.CCP)
+        if request_age >= self.CCP.LKA_ZERO_TORQUE_NS:
+          # Keep the request active at zero before dropping it at the hard deadline.
+          # A stalled control loop must never extend the request to finish a ramp.
+          apply_torque = 0
       else:
         apply_torque = 0
 
