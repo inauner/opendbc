@@ -47,6 +47,49 @@ class TestFcaGiorgioLateral(unittest.TestCase):
       self.assertEqual(self.parser.vl['LKA_HUD_2']['LKA_ACTIVE'], 0)
       self.assertEqual(self.parser.vl['LKA_HUD_3']['LKA_ACTIVE'], 0)
 
+  def test_gentle_cutoff_both_signs_ignores_new_demand(self):
+    for sign in (-1, 1):
+      self.setUp()
+      self.control.actuators.torque = sign
+      self.update(0)
+      self.state.lka_status = 2
+      for frame in range(1, 300):
+        self.update(frame * 10_000_000)
+      self.assertEqual(self.controller.apply_torque_last, sign * 34)
+      for frame in range(300, 350):
+        self.control.actuators.torque = -sign if frame % 2 else sign
+        output, _, primary, _ = self.update(frame * 10_000_000)
+        self.assertEqual(output.torqueOutputCan, sign * max(0, 34 - 2 * (frame - 299)))
+        self.assertEqual(primary['LKA_ACTIVE'], 1)
+      output, _, primary, _ = self.update(3_500_000_000)
+      self.assertEqual(output.torqueOutputCan, 0)
+      self.assertEqual(primary['LKA_ACTIVE'], 0)
+
+  def test_delayed_loop_does_not_extend_ramp_or_deadline(self):
+    self.update(0)
+    self.state.lka_status = 2
+    for frame in range(1, 10):
+      self.update(frame * 10_000_000)
+    output, _, primary, _ = self.update(3_200_000_000)
+    self.assertEqual(output.torqueOutputCan, 0)
+    self.assertEqual(primary['LKA_ACTIVE'], 1)
+    _, _, primary, _ = self.update(3_600_000_000)
+    self.assertEqual(primary['LKA_ACTIVE'], 0)
+
+  def test_disengagement_and_fault_do_not_wait_for_ramp(self):
+    for fault in (False, True):
+      self.setUp()
+      self.update(0)
+      self.state.lka_status = 2
+      for frame in range(1, 10):
+        self.update(frame * 10_000_000)
+      self.update(3_000_000_000)
+      self.state.out.steerFaultPermanent = fault
+      self.control.latActive = fault
+      output, _, primary, _ = self.update(3_010_000_000)
+      self.assertEqual(output.torqueOutputCan, 0)
+      self.assertEqual(primary['LKA_ACTIVE'], 0)
+
   def test_reset_requires_full_standby_and_new_ack(self):
     self.update(0)
     self.state.lka_status = 2
